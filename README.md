@@ -159,6 +159,19 @@ All configuration is done via the `.env` file or the admin **Settings** panel in
 | `DATA_PATH` | Path for PostgreSQL data volume | `./data` |
 | `CONFIG_PATH` | Path for app config volume | `./config` |
 | `NOTEL` | Option to disable telemetry settings | Not present by default |
+| `AUTH_PROXY_HEADER` | Header name to trust for reverse-proxy authentication | Not present by default |
+
+### Reverse-Proxy Authentication
+
+If you run OpenMTG behind an authenticating reverse proxy (Authelia, Authentik, Tinyauth, etc.), set `AUTH_PROXY_HEADER` to the header your proxy sends with the authenticated username, typically `Remote-User` or `X-Forwarded-User`:
+
+```bash
+AUTH_PROXY_HEADER=Remote-User
+```
+
+When the header names an existing, active OpenMTG user, requests are authenticated as that user with no separate login. Accounts are not created automatically, so an admin must create each user first. Regular token login keeps working for requests without the header.
+
+> **Warning:** Only enable this behind a reverse proxy that sets or strips this header on every request. Anyone who can reach OpenMTG directly can impersonate any user by sending the header themselves.
 
 ### Price Refresh Settings (Admin UI)
 

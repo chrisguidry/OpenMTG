@@ -6,6 +6,7 @@ export const AuthContext = createContext(null) // eslint-disable-line react-refr
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [proxyAuth, setProxyAuth] = useState(false)
   const [setupRequired, setSetupRequired] = useState(false)
   const [showroomEnabled, setShowroomEnabled] = useState(true)
   const [scannerEnabled, setScannerEnabled] = useState(true)
@@ -35,7 +36,15 @@ export function AuthProvider({ children }) {
 
       const token = localStorage.getItem('token')
       if (!token) {
-        setLoading(false)
+        // With no token, /auth/me only succeeds when a reverse proxy
+        // authenticates the request (AUTH_PROXY_HEADER).
+        try {
+          const me = await api.get('/auth/me')
+          setUser(me.data)
+          setProxyAuth(true)
+        } catch { /* not proxy-authenticated */ } finally {
+          setLoading(false)
+        }
         return
       }
       try {
@@ -78,7 +87,7 @@ export function AuthProvider({ children }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, loading, setupRequired, showroomEnabled, scannerEnabled, login, logout, completeSetup, refreshUser }}>
+    <AuthContext.Provider value={{ user, loading, proxyAuth, setupRequired, showroomEnabled, scannerEnabled, login, logout, completeSetup, refreshUser }}>
       {children}
     </AuthContext.Provider>
   )

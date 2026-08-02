@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 import bcrypt
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from database import get_db
@@ -15,7 +15,9 @@ if not SECRET_KEY:
 ALGORITHM = "HS256"
 TOKEN_EXPIRE_MINUTES = 60 * 24 * 7
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+# auto_error is off so the proxy header can be checked before the bearer
+# token; get_current_user raises the same 401 the scheme would have.
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
 
 def hash_password(password: str) -> str:
@@ -33,7 +35,8 @@ def create_access_token(data: dict) -> str:
 
 
 def get_current_user(
-    token: str = Depends(oauth2_scheme),
+    request: Request,
+    token: str | None = Depends(oauth2_scheme),
     db: Session = Depends(get_db)
 ) -> models.User:
     credentials_exception = HTTPException(
@@ -41,6 +44,25 @@ def get_current_user(
         detail="Invalid or expired token",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+    proxy_header = os.environ.get("AUTH_PROXY_HEADER")
+    if proxy_header:
+        username = request.headers.get(proxy_header)
+        if username is not None:
+            user = db.query(models.User).filter(models.User.username == username).first()
+            if user is None or not user.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Unknown or inactive user",
+                )
+            return user
+
+    if token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
