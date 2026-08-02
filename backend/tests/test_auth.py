@@ -134,3 +134,43 @@ class TestMe:
     def test_invalid_token_returns_401(self, client):
         r = client.get("/auth/me", headers={"Authorization": "Bearer not.a.real.token"})
         assert r.status_code == 401
+
+
+# reverse-proxy header auth (AUTH_PROXY_HEADER)
+
+class TestAuthProxy:
+    def test_known_user_is_authenticated(self, client, db, monkeypatch):
+        monkeypatch.setenv("AUTH_PROXY_HEADER", "Remote-User")
+        make_user(db, username="alice")
+        r = client.get("/auth/me", headers={"Remote-User": "alice"})
+        assert r.status_code == 200
+        assert r.json()["username"] == "alice"
+
+    def test_unknown_user_returns_401(self, client, monkeypatch):
+        monkeypatch.setenv("AUTH_PROXY_HEADER", "Remote-User")
+        r = client.get("/auth/me", headers={"Remote-User": "nobody"})
+        assert r.status_code == 401
+
+    def test_inactive_user_returns_401(self, client, db, monkeypatch):
+        monkeypatch.setenv("AUTH_PROXY_HEADER", "Remote-User")
+        make_user(db, username="inactive", is_active=False)
+        r = client.get("/auth/me", headers={"Remote-User": "inactive"})
+        assert r.status_code == 401
+
+    def test_header_ignored_when_disabled(self, client, db, monkeypatch):
+        monkeypatch.delenv("AUTH_PROXY_HEADER", raising=False)
+        make_user(db, username="alice")
+        r = client.get("/auth/me", headers={"Remote-User": "alice"})
+        assert r.status_code == 401
+
+    def test_token_works_when_disabled(self, client, regular_user, regular_headers, monkeypatch):
+        monkeypatch.delenv("AUTH_PROXY_HEADER", raising=False)
+        r = client.get("/auth/me", headers=regular_headers)
+        assert r.status_code == 200
+        assert r.json()["username"] == regular_user.username
+
+    def test_token_works_when_header_absent(self, client, regular_user, regular_headers, monkeypatch):
+        monkeypatch.setenv("AUTH_PROXY_HEADER", "Remote-User")
+        r = client.get("/auth/me", headers=regular_headers)
+        assert r.status_code == 200
+        assert r.json()["username"] == regular_user.username

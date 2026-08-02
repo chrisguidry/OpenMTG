@@ -18,7 +18,7 @@ const ADMIN_LINKS = [
 ]
 
 export default function Layout() {
-  const { user, logout, showroomEnabled, scannerEnabled } = useAuth()
+  const { user, logout, proxyAuth, showroomEnabled, scannerEnabled } = useAuth()
   const showroomLink = { to: `/showroom/edit/${user?.username?.toLowerCase()}`, icon: Eye, label: 'Showroom' }
   const isMobile = useIsMobile()
   const [menuOpen, setMenuOpen] = useState(false)
@@ -50,10 +50,12 @@ export default function Layout() {
                 <Icon size={16} /> {label}
               </NavLink>
             ))}
-            <div className="mobile-menu-divider" />
-            <button className="logout-btn" onClick={() => { logout(); close() }}>
-              <LogOut size={16} /> Logout
-            </button>
+            {!proxyAuth && <>
+              <div className="mobile-menu-divider" />
+              <button className="logout-btn" onClick={() => { logout(); close() }}>
+                <LogOut size={16} /> Logout
+              </button>
+            </>}
           </div>
         </>}
 
@@ -78,9 +80,11 @@ export default function Layout() {
             </NavLink>
           ))}
         </div>
-        <button className="logout-btn" onClick={logout}>
-          Logout
-        </button>
+        {!proxyAuth && (
+          <button className="logout-btn" onClick={logout}>
+            Logout
+          </button>
+        )}
       </nav>
       <main className="main-content">
         <Outlet />
