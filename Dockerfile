@@ -13,13 +13,16 @@ FROM python:3.14-slim
 WORKDIR /app
 
 RUN apt-get update && \
+    apt-get upgrade -y --no-install-recommends && \
     apt-get install -y --no-install-recommends nginx supervisor && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Python deps in their own layer
+# Python deps in their own layer. The image installs nothing after this, and
+# pip vendors old copies of urllib3 and msgpack that scanners report.
 COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip uninstall -y pip
 
 # Backend source
 COPY backend/ .
