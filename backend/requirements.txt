@@ -6,6 +6,6 @@ httpx
 PyJWT
 bcrypt==5.0.0
 python-multipart
-psycopg2-binary
+psycopg[binary]
 pydantic[email]
 slowapi
