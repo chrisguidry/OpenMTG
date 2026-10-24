@@ -21,6 +21,24 @@ def _add_entry(db, user, card, quantity=1, foil=False, condition="NM", language=
     return entry
 
 
+def _add_deck_card(db, user, card, quantity=1, deck=None, is_sideboard=False, is_commander=False):
+    if deck is None:
+        deck = models.Deck(user_id=user.id, name="Test Deck")
+        db.add(deck)
+        db.commit()
+        db.refresh(deck)
+    deck_card = models.DeckCard(
+        deck_id=deck.id,
+        card_id=card.id,
+        quantity=quantity,
+        is_sideboard=is_sideboard,
+        is_commander=is_commander,
+    )
+    db.add(deck_card)
+    db.commit()
+    return deck
+
+
 # Auth guard
 
 class TestCollectionAuthGuard:
@@ -63,6 +81,55 @@ class TestCollectionList:
         names = [e["card"]["name"] for e in r.json()]
         assert "Lightning Bolt" in names
         assert "Counterspell" not in names
+
+
+# GET /collection  (in_decks)
+
+class TestCollectionInDecks:
+    def test_no_deck_usage_returns_zero(self, client, db, regular_user):
+        card = make_card(db)
+        _add_entry(db, regular_user, card, quantity=2)
+
+        r = client.get("/collection", headers=auth_headers(regular_user))
+        assert r.json()[0]["in_decks"] == 0
+
+    def test_sums_across_mainboard_sideboard_and_commander(self, client, db, regular_user):
+        card = make_card(db)
+        _add_entry(db, regular_user, card, quantity=4)
+        deck1 = _add_deck_card(db, regular_user, card, quantity=1)
+        _add_deck_card(db, regular_user, card, quantity=1, deck=deck1, is_sideboard=True)
+        _add_deck_card(db, regular_user, card, quantity=1, is_commander=True)
+
+        r = client.get("/collection", headers=auth_headers(regular_user))
+        assert r.json()[0]["in_decks"] == 3
+
+    def test_foil_and_nonfoil_rows_of_same_printing_share_the_same_count(self, client, db, regular_user):
+        card = make_card(db)
+        _add_entry(db, regular_user, card, quantity=1, foil=True)
+        _add_entry(db, regular_user, card, quantity=1, foil=False)
+        _add_deck_card(db, regular_user, card, quantity=2)
+
+        r = client.get("/collection", headers=auth_headers(regular_user))
+        assert {e["in_decks"] for e in r.json()} == {2}
+
+    def test_other_printing_of_same_name_is_unaffected(self, client, db, regular_user):
+        lea = make_card(db, scryfall_id="bolt-lea", set_code="LEA")
+        m10 = make_card(db, scryfall_id="bolt-m10", set_code="M10")
+        _add_entry(db, regular_user, lea, quantity=1)
+        _add_entry(db, regular_user, m10, quantity=1)
+        _add_deck_card(db, regular_user, lea, quantity=1)
+
+        r = client.get("/collection", headers=auth_headers(regular_user))
+        by_set = {e["card"]["set_code"]: e["in_decks"] for e in r.json()}
+        assert by_set == {"LEA": 1, "M10": 0}
+
+    def test_other_users_decks_do_not_count(self, client, db, regular_user, admin_user):
+        card = make_card(db)
+        _add_entry(db, regular_user, card, quantity=1)
+        _add_deck_card(db, admin_user, card, quantity=3)
+
+        r = client.get("/collection", headers=auth_headers(regular_user))
+        assert r.json()[0]["in_decks"] == 0
 
     def test_search_is_case_insensitive(self, client, db, regular_user):
         bolt = make_card(db, scryfall_id="bolt-2", name="Lightning Bolt")
@@ -235,8 +302,20 @@ class TestCollectionStats:
         _add_entry(db, regular_user, card)
 
         stats = client.get("/collection/stats", headers=auth_headers(regular_user)).json()
-        for key in ("summary", "rarity", "colors", "types", "conditions", "top_cards", "top_sets"):
+        for key in ("summary", "rarity", "colors", "color_identity_pct", "types", "conditions", "top_cards", "top_sets"):
             assert key in stats
+
+    def test_color_identity_pct_sums_to_100(self, client, db, regular_user):
+        red = make_card(db, scryfall_id="r-1", name="Red Card", color_identity="R")
+        blue = make_card(db, scryfall_id="u-1", name="Blue Card", color_identity="U")
+        _add_entry(db, regular_user, red, quantity=3)
+        _add_entry(db, regular_user, blue, quantity=1)
+
+        stats = client.get("/collection/stats", headers=auth_headers(regular_user)).json()
+        pct = stats["color_identity_pct"]
+        assert pct["Red"] == pytest.approx(75.0)
+        assert pct["Blue"] == pytest.approx(25.0)
+        assert sum(pct.values()) == pytest.approx(100.0)
 
 
 # POST /collection/import  (bulk import)

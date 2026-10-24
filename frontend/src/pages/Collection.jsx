@@ -439,11 +439,19 @@ export default function Collection() {
           {entry.card.set_name}<br />#{entry.card.collector_number}
           </td>
         )}
-        {visibleCols.qty       && <td>{entry.quantity}</td>}
+        {visibleCols.qty && (
+          <td>
+          {entry.quantity}
+          {entry.in_decks > 0 && (
+            <div className="price-note">{entry.in_decks} in decks</div>
+          )}
+          </td>
+        )}
         {visibleCols.condition && (
           <td>
           <span className={`badge badge-${entry.condition.toLowerCase()}`}>{entry.condition}</span>
           {entry.foil && <span className="badge badge-foil" style={{ marginLeft: 4 }}>Foil</span>}
+          {entry.on_loan && <span className="badge badge-loan" style={{ marginLeft: 4 }}>On Loan</span>}
           </td>
         )}
         {visibleCols.price && (

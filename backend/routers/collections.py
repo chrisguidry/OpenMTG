@@ -1,17 +1,24 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+import logging
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile, File, status
+from fastapi.responses import FileResponse
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session, joinedload
 from database import get_db
 from security import get_current_user
+import os
 import re
 from schemas import AddCardRequest, UpdateCardRequest, ImportResult, ImportRequest
 from constants import CONDITION_MULTIPLIERS
-from markets import MARKETS
+from markets import MARKETS, resolve_base_currency_and_rate
 
 import models
 import schemas
 import services.scryfall as scryfall_service
 from services.scryfall_queue import scryfall_queue, Priority
+
+UPLOADS_PATH = os.environ.get("UPLOADS_PATH", "/data/uploads")
+VALID_SIDES = {"front", "back"}
+VALID_PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
 router = APIRouter(prefix="/collection", tags=["collection"])
@@ -25,14 +32,27 @@ def get_collection(
 ):
     query = (
         db.query(models.CollectionEntry)
-        .options(joinedload(models.CollectionEntry.card))
+        .options(joinedload(models.CollectionEntry.card),
+                 joinedload(models.CollectionEntry.photos))
         .filter(models.CollectionEntry.user_id == current_user.id)
     )
     if search:
         query = query.join(models.Card).filter(
             models.Card.name.ilike(f"%{search}%")
         )
-    return query.order_by(models.CollectionEntry.added_at.desc()).limit(10000).all()
+    entries = query.order_by(models.CollectionEntry.added_at.desc()).limit(10000).all()
+
+    in_decks = dict(
+        db.query(models.DeckCard.card_id, func.sum(models.DeckCard.quantity))
+        .join(models.Deck, models.Deck.id == models.DeckCard.deck_id)
+        .filter(models.Deck.user_id == current_user.id)
+        .group_by(models.DeckCard.card_id)
+        .all()
+    )
+    for entry in entries:
+        entry.in_decks = in_decks.get(entry.card_id, 0)
+
+    return entries
 
 
 @router.post("", response_model=schemas.CollectionEntryOut, status_code=201)
@@ -89,7 +109,8 @@ def update_entry(
 ):
     entry = (
         db.query(models.CollectionEntry)
-        .options(joinedload(models.CollectionEntry.card))
+        .options(joinedload(models.CollectionEntry.card),
+                 joinedload(models.CollectionEntry.photos))
         .filter(
             models.CollectionEntry.id == entry_id,
             models.CollectionEntry.user_id == current_user.id,
@@ -119,6 +140,15 @@ def update_entry(
         entry.is_favorite = payload.is_favorite
     if payload.in_showroom is not None:
         entry.in_showroom = payload.in_showroom
+    if payload.on_loan is not None:
+        entry.on_loan = payload.on_loan
+        if not payload.on_loan:
+            entry.loaned_to = None
+            entry.loan_date = None
+    if payload.loaned_to is not None:
+        entry.loaned_to = payload.loaned_to
+    if payload.loan_date is not None:
+        entry.loan_date = payload.loan_date
 
     db.commit()
     db.refresh(entry)
@@ -150,21 +180,14 @@ def get_stats(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    uid = current_user.id
-    currency = current_user.preferred_currency
+    return compute_collection_stats(db, current_user)
 
-    if currency in MARKETS:
-        base_currency = currency
-        rate          = 1.0
-    else:
-        db_curr = db.query(models.ConvertedCurrency).filter_by(code=currency.upper()).first()
-        if db_curr and db_curr.rate:
-            base_currency = "usd"
-            rate          = db_curr.rate
-        else:
-            currency      = "usd"
-            base_currency = "usd"
-            rate          = 1.0
+
+def compute_collection_stats(db: Session, user: models.User) -> dict:
+    uid = user.id
+    currency = user.preferred_currency
+
+    base_currency, rate, currency = resolve_base_currency_and_rate(db, currency)
 
     normal_col_name = f"price_{base_currency}"
     foil_col_name = f"price_{base_currency}_foil"
@@ -378,6 +401,10 @@ def get_stats(
         },
         "rarity":     [{"name": r.rarity or "unknown", "count": r.count, "value": round(r.value or 0, 2)} for r in sorted(rarity_rows, key=lambda r: r.rarity or "")],
         "colors":     [{"name": k, "count": v} for k, v in sorted(color_count.items(), key=lambda x: x[1], reverse=True)],
+        "color_identity_pct": {
+            k: round(v / sum(color_count.values()) * 100, 1)
+            for k, v in color_count.items()
+        } if color_count else {},
         "types":      [{"name": k, "count": v} for k, v in sorted(type_count.items(), key=lambda x: x[1], reverse=True)],
         "conditions": [{"name": r.condition or "Unknown", "count": r.count, "value": round(r.value or 0, 2)} for r in sorted(condition_rows, key=lambda r: r.condition or "")],
         "top_cards":  top_cards,
@@ -464,8 +491,117 @@ def import_collection(
             imported += 1
 
         except Exception as e:
-            errors.append(f'Error importing "{name}": {str(e)}')
+            logging.getLogger(__name__).error("Import error for %r: %s", name, e)
+            errors.append(f'Could not import "{name}"')
             skipped += 1
             continue
 
     return {"imported": imported, "skipped": skipped, "errors": errors}
+
+
+def _get_own_entry(entry_id: int, current_user, db: Session):
+    entry = (
+        db.query(models.CollectionEntry)
+        .filter(
+            models.CollectionEntry.id == entry_id,
+            models.CollectionEntry.user_id == current_user.id,
+        )
+        .first()
+    )
+    if not entry:
+        raise HTTPException(status_code=404, detail="Collection entry not found")
+    return entry
+
+
+@router.post("/{entry_id}/photos/{side}", status_code=200)
+async def upload_photo(
+    entry_id: int,
+    side: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    if side not in VALID_SIDES:
+        raise HTTPException(status_code=400, detail="Side must be 'front' or 'back'")
+
+    _get_own_entry(entry_id, current_user, db)
+
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in VALID_PHOTO_EXTENSIONS:
+        ext = ".jpg"
+    photos_dir = os.path.realpath(os.path.join(UPLOADS_PATH, "card_photos"))
+    os.makedirs(photos_dir, exist_ok=True)
+    file_path = os.path.realpath(os.path.join(photos_dir, f"{entry_id}_{side}{ext}"))
+    if not file_path.startswith(photos_dir + os.sep):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    contents = await file.read()
+    with open(file_path, "wb") as f:
+        f.write(contents)
+
+    existing = (
+        db.query(models.CardPhoto)
+        .filter_by(collection_entry_id=entry_id, side=side)
+        .first()
+    )
+    if existing:
+        if existing.file_path != file_path and os.path.exists(existing.file_path):
+            os.remove(existing.file_path)
+        existing.file_path = file_path
+    else:
+        db.add(models.CardPhoto(
+            collection_entry_id=entry_id,
+            side=side,
+            file_path=file_path,
+        ))
+    db.commit()
+    return {"side": side, "ok": True}
+
+
+@router.delete("/{entry_id}/photos/{side}", status_code=204)
+def delete_photo(
+    entry_id: int,
+    side: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    if side not in VALID_SIDES:
+        raise HTTPException(status_code=400, detail="Side must be 'front' or 'back'")
+
+    _get_own_entry(entry_id, current_user, db)
+
+    photo = (
+        db.query(models.CardPhoto)
+        .filter_by(collection_entry_id=entry_id, side=side)
+        .first()
+    )
+    if not photo:
+        raise HTTPException(status_code=404, detail="Photo not found")
+
+    if os.path.exists(photo.file_path):
+        os.remove(photo.file_path)
+    db.delete(photo)
+    db.commit()
+
+
+@router.get("/{entry_id}/photos/{side}")
+def get_photo(
+    entry_id: int,
+    side: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    if side not in VALID_SIDES:
+        raise HTTPException(status_code=400, detail="Side must be 'front' or 'back'")
+
+    _get_own_entry(entry_id, current_user, db)
+
+    photo = (
+        db.query(models.CardPhoto)
+        .filter_by(collection_entry_id=entry_id, side=side)
+        .first()
+    )
+    if not photo or not os.path.exists(photo.file_path):
+        raise HTTPException(status_code=404, detail="Photo not found")
+
+    return FileResponse(photo.file_path)

@@ -8,13 +8,17 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true)
   const [proxyAuth, setProxyAuth] = useState(false)
   const [setupRequired, setSetupRequired] = useState(false)
+  const [dbBackend, setDbBackend] = useState(null)
   const [showroomEnabled, setShowroomEnabled] = useState(true)
   const [scannerEnabled, setScannerEnabled] = useState(true)
+  const [tradesEnabled, setTradesEnabled] = useState(true)
+  const [homeAssistantEnabled, setHomeAssistantEnabled] = useState(false)
 
   useEffect(() => {
     const init = async () => {
       try {
         const setup = await api.get('/auth/setup-required')
+        setDbBackend(setup.data.db_backend)
         if (setup.data.setup_required) {
           setSetupRequired(true)
           setLoading(false)
@@ -32,6 +36,16 @@ export function AuthProvider({ children }) {
       try {
         const feat = await api.get('/card-search/status')
         setScannerEnabled(feat.data.enabled)
+      } catch { /* non-fatal */ }
+
+      try {
+        const feat = await api.get('/trades/status')
+        setTradesEnabled(feat.data.enabled)
+      } catch { /* non-fatal */ }
+
+      try {
+        const feat = await api.get('/webhooks/status')
+        setHomeAssistantEnabled(feat.data.enabled)
       } catch { /* non-fatal */ }
 
       const token = localStorage.getItem('token')
@@ -87,7 +101,7 @@ export function AuthProvider({ children }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, loading, proxyAuth, setupRequired, showroomEnabled, scannerEnabled, login, logout, completeSetup, refreshUser }}>
+    <AuthContext.Provider value={{ user, loading, proxyAuth, setupRequired, dbBackend, showroomEnabled, scannerEnabled, tradesEnabled, homeAssistantEnabled, login, logout, completeSetup, refreshUser }}>
       {children}
     </AuthContext.Provider>
   )

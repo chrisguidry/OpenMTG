@@ -10,6 +10,9 @@ DEFAULTS = {
     "telemetry_id_created": "",
     "showroom_enabled": "true",
     "card_search_enabled": "true",
+    "trades_enabled": "true",
+    "home_assistant_integration_enabled": "false",
+    "home_assistant_max_credentials_per_user": "3",
 }
 
 _cache: dict | None = None

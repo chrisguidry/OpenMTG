@@ -38,6 +38,19 @@ def reset_db():
     Base.metadata.drop_all(bind=engine)
 
 
+@pytest.fixture(autouse=True)
+def isolate_config_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONFIG_PATH", str(tmp_path))
+
+
+@pytest.fixture(autouse=True)
+def reset_settings_cache():
+    import services.settings as settings_service
+    settings_service._cache = None
+    yield
+    settings_service._cache = None
+
+
 @pytest.fixture()
 def db():
     session = TestingSessionLocal()

@@ -14,6 +14,9 @@ import Wishlist from './pages/Wishlist'
 import Showroom from './pages/Showroom'
 import ShowroomEdit from './pages/ShowroomEdit'
 import ShowroomDeckView from './pages/ShowroomDeckView'
+import Trades from './pages/Trades'
+import TradeDetail from './pages/TradeDetail'
+import Webhooks from './pages/Webhooks'
 
 function PrivateRoute({ children }) {
   const { user, loading, setupRequired } = useAuth()
@@ -53,6 +56,9 @@ export default function App() {
         <Route path="settings" element={<Settings />} />
         <Route path="wishlist" element={<Wishlist />} />
         <Route path="showroom/edit/:username" element={<ShowroomEdit />} />
+        <Route path="trades" element={<Trades />} />
+        <Route path="trades/:id" element={<TradeDetail />} />
+        <Route path="webhooks" element={<Webhooks />} />
       </Route>
     </Routes>
   )

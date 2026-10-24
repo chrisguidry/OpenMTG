@@ -1,5 +1,105 @@
 # Changelog
 
+## v1.10.0
+
+### Added
+
+- **Home Assistant Integration** - Per-user webhook credentials for pushing trade and wishlist-price alerts to Home Assistant, and pulling live collection stats.
+  - New Webhooks page where any user can generate credentials, each pairing a Home Assistant target URL with a bearer secret shown once at creation.
+  - Push events for trade proposals, updates, engagement, acceptance, and rejection/cancellation, plus a wishlist target-price-met alert.
+  - A new authenticated pull endpoint for Home Assistant to fetch a user's collection stats on its own schedule.
+  - Per-credential TLS verification toggle for Home Assistant instances behind a self-signed certificate or internal CA, with a visible "Insecure" indicator when disabled.
+  - Admin controls in Settings to enable/disable the integration and cap credentials per user (default 3, off by default).
+  - See the wiki for setup and Home Assistant configuration details.
+
+### Changed
+
+- Version bumped from 1.9.2 to 1.10.0 within `constants.py`.
+
+## v1.9.2
+
+### Fixed
+
+- `added_at`, `created_at`, `recorded_at`, and `last_fetched` columns (`cards`, `users`, `collection_entries`, `decks`, `price_history`, `wishlist_entries`, `converted_currencies`) used `server_default=sa.text('now()')`, valid Postgres SQL but not a SQLite function, causing `sqlite3.OperationalError: unknown function: now()` on any insert that didn't explicitly set the timestamp (e.g. importing a card) when running on SQLite
+- Migrations now use `sa.func.now()`, which SQLAlchemy compiles per dialect (`CURRENT_TIMESTAMP` on SQLite, `now()` on Postgres); new migration `c3d4e5f6a7b8` repairs existing SQLite databases in place via `batch_alter_table`, applied automatically on next `alembic upgrade head`
+
+### Changed
+
+- Version bumped from 1.9.1 to 1.9.2 within `constants.py`.
+
+## v1.9.1
+
+### Added
+
+- **Deck Usage Tracking** - Shows how many copies of a card printing are currently allocated to decks.
+  - `GET /collection` returns a new `in_decks` field per entry: the sum of `DeckCard.quantity` across all of the user's decks (mainboard, sideboard, and commander) for that card's printing.
+  - Counted per printing (`card_id`), not per foil/condition/language entry. `DeckCard` has no foil field, so a foil and non-foil row of the same printing report the same count.
+  - Collection page: "N in decks" shown below the Qty value.
+  - `TradeAddCardModal` - "N in deck(s)" badge shown per card in the browse list, and a note next to the quantity picker once a card is selected.
+
+- **SQLite Database Support** - PostgreSQL remains the default; `docker-compose.sqlite.yml` runs the app against a local SQLite file instead. Permanent, per-instance choice - there is no tool to convert an existing instance between backends.
+  - `backend/database.py` - exports `DB_BACKEND`; registers `PRAGMA journal_mode=WAL` and `PRAGMA foreign_keys=ON` on every SQLite connection.
+  - `GET /auth/setup-required` returns `db_backend`; the Setup page banner names the active backend.
+  - `POST /auth/setup` writes `$CONFIG_PATH/db_backend.lock` after the first admin account is created. `entrypoint.sh` compares this against the current `DATABASE_URL` on every boot and refuses to start on a mismatch.
+  - `docker-compose.sqlite.yml` - standalone compose file (`docker compose -f docker-compose.sqlite.yml up`) with its own `SQLITE_PATH` volume. `docker-compose.yml` itself is unchanged.
+  - `app` and `db` in `docker-compose.yml`, and `app` in `docker-compose.sqlite.yml`, now set `container_name` (`openmtg`, `openmtg-db`) instead of Compose's default `<project>-app-1` naming.
+
+- **Migration portability test suite** - `backend/tests/test_migration_dialect_safety.py` statically scans every migration for `op.alter_column`/`op.drop_column` calls outside `batch_alter_table`, which break on SQLite. `backend/tests/test_migration_schema_parity.py` replays the real Alembic chain against a fresh SQLite database and a fresh PostgreSQL database and diffs the resulting schemas.
+  - `ci.yml` - added a `postgres:16-alpine` service container so the parity check runs on every push/PR.
+  - Downgrading (`alembic downgrade`) is not supported on SQLite - only the forward `upgrade head` path is exercised in production.
+
+### Changed
+
+- Version bumped from 1.9.0 to 1.9.1 within `constants.py`.
+
+## v1.9.0
+
+### Added
+
+- **Loan Tracking** - Track cards loaned out to other players from the Collection.
+  - `on_loan`, `loaned_to`, and `loan_date` fields added to `CollectionEntry` model and schemas.
+  - Loan section added to the Edit Card modal with an on-loan toggle, borrower name field, and loan date picker.
+  - "On Loan" badge shown on loaned entries in the Collection view.
+  - Alembic migration `f0a1b2c3d4e5` adds the three new columns to `collection_entries`.
+
+- **Card Photos** - Upload and view front and back condition photos for individual collection entries.
+  - Photos stored on disk at `/data/uploads/card_photos/`. One photo per side per entry; re-uploading replaces the existing photo. Served through FastAPI (not nginx) so authentication is enforced on every request.
+  - `card_photos` table with cascade delete tied to the parent entry. Alembic migration `f1a2b3c4d5e6`.
+  - `POST/DELETE/GET /collection/{entry_id}/photos/{side}` - upload, remove, and serve photos (owner only).
+  - `PhotoUploadModal` component - drag-and-drop or file browse with live preview. Loads any existing photo for the selected side on open, functioning as both viewer and uploader.
+  - `CardPhotoViewer` component - Front/Back tab switcher that fetches photos as authenticated blob URLs via `URL.createObjectURL()`.
+  - Updated CSP `img-src` in `nginx.conf` to include `blob:` for `URL.createObjectURL()` to render in the browser.
+
+- **Trade System** - Formal trade proposals, negotiation, and automatic card transfers between accounts.
+  - Trades stored in a dedicated SQLite database (`/data/trades/trades.db`) fully independent of the main PostgreSQL inventory. Deleting it removes all trade history without affecting card data.
+  - `Trade` and `TradeItem` models in `backend/models/trade.py` using a separate SQLAlchemy engine and session (`database_trades.py`).
+  - Separate Alembic environment (`alembic_trades.ini`, `migrations_trades/`) for the trades database.
+  - Trade state machine: `proposed` to `active` to `accepted` / `rejected` / `cancelled`. On double-confirmation, cards transfer automatically, validated against live quantities before execution.
+  - `GET /trades/pending-count`, `GET /trades`, `POST /trades`, `GET /trades/{id}`, `PUT /trades/{id}/items`, `POST /trades/{id}/confirm`, `POST /trades/{id}/unconfirm`, `POST /trades/{id}/reject`, `GET /trades/{id}/photos/{entry_id}/{side}`.
+  - `Trades.jsx` - trade list page with Active and History sections, status color badges, "Your Turn" indicator, and a Propose Trade modal.
+  - `TradeDetail.jsx` - split-screen view of both offers with live totals (condition multipliers applied from local state), and a Confirm / Un-submit / Reject action bar.
+  - `TradeAddCardModal` - pick cards from your collection to add to a trade, with a gold-outline selected state.
+  - `!` badge on the Trades nav link (desktop and mobile) when any trade is awaiting your action.
+  - `services/webhooks.py` stub included as the foundation for v1.10 Home Assistant integration.
+
+- **Trades Feature Toggle** - Admins can enable or disable Trades from the Feature Toggles section of the Settings page.
+  - `GET /trades/status` public endpoint fetched by `AuthContext` on init; exposes `tradesEnabled` to all components via context.
+  - When disabled: the nav link is hidden, trade pages redirect to `/collection`, and pending count returns zero.
+  - `trades_enabled` added to `services/settings.py` DEFAULTS, `SettingsUpdate` schema, and the `PATCH /admin/settings` handler.
+
+- **Scryfall batch price refresh** - Price updates now use `POST /cards/collection` to fetch up to 75 cards per request, replacing individual `GET /cards/{id}` calls.
+  - `scryfall_queue.post()` method added with a configurable per-request HTTP timeout (30 s for batch vs 10 s for single-card GETs).
+  - `price_refresh.py` rewritten to batch all cards in groups of 75, mapping Scryfall responses back to database records by `scryfall_id` and committing per batch.
+
+- Multi-platform Docker image builds targeting `linux/amd64` and `linux/arm64` via `docker buildx`.
+
+### Changed
+
+- `docker-compose.yml` volume paths for uploads and trades use inline shell defaults (`${UPLOADS_PATH:-./uploads}`, `${TRADES_PATH:-./trades}`) so the stack starts without those variables set in `.env`.
+- `README.md` Credits section updated with a Scryfall attribution line.
+
+---
+
 ## v1.8.2
 
 ### Added
