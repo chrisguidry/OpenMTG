@@ -224,6 +224,8 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
+To build the published image the way this fork's CI does, run `docker buildx bake -f docker-bake.hcl openmtg --load`. `docker-bake.hcl` holds the tags and the OCI labels.
+
 ---
 
 ## License

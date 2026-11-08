@@ -13,11 +13,16 @@ jobs:
     name: Build and push the image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - uses: docker/login-action@v3
+      # The gha layer cache in docker-bake.hcl needs the runner's cache
+      # token, which only actions can read. This step copies it into the
+      # environment of the run steps below.
+      - uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4.0.0
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -29,12 +34,17 @@ jobs:
         id: tag
         run: echo "tag=main-${{ github.run_number }}-$(git rev-parse --short=8 HEAD)" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-            ghcr.io/chrisguidry/openmtg:${{ steps.tag.outputs.tag }}
-            ghcr.io/chrisguidry/openmtg:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      # docker-bake.hcl holds the tags and the OCI labels and annotations,
+      # so this build and `docker buildx bake` on a laptop make the same
+      # image. SOURCE_DATE_EPOCH makes the image config's creation time the
+      # commit time, which leaves the layer cache alone. The -f flag keeps
+      # bake from also reading docker-compose.yml.
+      - name: Build and push
+        env:
+          VERSION: ${{ steps.tag.outputs.tag }}
+        run: |
+          export SOURCE="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+          export REVISION="$(git rev-parse HEAD)"
+          export CREATED="$(git log -1 --format=%cI)"
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          docker buildx bake -f docker-bake.hcl openmtg --push --sbom=true
