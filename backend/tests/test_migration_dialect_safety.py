@@ -1,4 +1,5 @@
 import ast
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -95,6 +96,12 @@ def _make_dummy_table(engine):
     metadata.create_all(engine)
 
 
+# SQLite 3.53 added ALTER COLUMN ... SET NOT NULL, so this only fails on older SQLite, such as
+# the 3.46 in the image's Debian base. Migrations still need batch mode for those.
+@pytest.mark.skipif(
+    sqlite3.sqlite_version_info >= (3, 53, 0),
+    reason="SQLite 3.53 and later alter a column's nullability in place",
+)
 def test_alter_column_without_batch_mode_fails_on_sqlite(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'demo.db'}")
     _make_dummy_table(engine)
