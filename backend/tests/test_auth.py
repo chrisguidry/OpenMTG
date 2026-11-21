@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import patch
 from conftest import make_user, auth_headers
 from security import hash_password, verify_password, create_access_token
+import security
 import jwt, os
 
 # security.py unit tests
@@ -192,3 +193,20 @@ class TestAuthProxy:
         r = client.get("/auth/me", headers=regular_headers)
         assert r.status_code == 200
         assert r.json()["username"] == regular_user.username
+
+
+class TestUnknownUsernameTiming:
+    def test_unknown_username_still_runs_one_bcrypt_check(self, client):
+        with patch("routers.auth.verify_password", wraps=security.verify_password) as spy:
+            r = client.post("/auth/login", data={"username": "nobody", "password": "password123"})
+
+        assert r.status_code == 401
+        spy.assert_called_once_with("password123", security.dummy_password_hash())
+
+    def test_known_username_runs_one_bcrypt_check(self, client, db):
+        user = make_user(db)
+        with patch("routers.auth.verify_password", wraps=security.verify_password) as spy:
+            r = client.post("/auth/login", data={"username": "testuser", "password": "wrong-password"})
+
+        assert r.status_code == 401
+        spy.assert_called_once_with("wrong-password", user.hashed_password)
